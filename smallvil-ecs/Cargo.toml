@@ -1,0 +1,9 @@
+[package]
+name = "smallvil-ecs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smithay-ecs = { path = "../" }
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+calloop = "0.10.5"
