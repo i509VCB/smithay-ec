@@ -25,26 +25,57 @@
 
 mod dispatch;
 
-use hecs::Entity;
-use smithay::utils::{Logical, Point};
-use wayland_server::protocol::{wl_buffer, wl_output, wl_surface::WlSurface, wl_subsurface::WlSubsurface};
+use std::{collections::HashMap, sync::Mutex};
 
-use crate::EcsHandler;
+use hecs::Entity;
+use smithay::utils::{Logical, Point, Rectangle};
+use wayland_backend::server::ObjectId;
+use wayland_server::protocol::{
+    wl_buffer, wl_output, wl_subsurface::WlSubsurface, wl_surface::WlSurface,
+};
+
+use crate::EcsAccess;
 
 // TODO: Way to allow components to be notified that a surface was pre and post committed. This kind of acts
 // like a system. But it's per object type.
 
-pub struct Compositor {}
+pub struct Compositor {
+    surfaces: HashMap<ObjectId, WlSurface>,
+}
 
-pub trait CompositorHandler: EcsHandler {
-    fn new_surface(&mut self, surface: &WlSurface, entity: Entity);
+pub trait CompositorHandler: EcsAccess {
+    // TODO: Remove this Compositor type
+    fn compositor(&mut self) -> &mut Compositor;
 
-    fn commit(&mut self, surface: &WlSurface, entity: Entity);
+    fn new_surface(&mut self, surface: WlSurface);
 
-    fn destroy(&mut self, surface: &WlSurface, entity: Entity) {
+    fn commit(&mut self, surface: &WlSurface);
+
+    fn destroy(&mut self, surface: &WlSurface) {
         let _ = surface;
-        let _ = entity;
     }
+}
+
+/// A system that is run before applying a pending surface state.
+///
+/// This is typically used by protocol extensions that add state to a surface and need to check on commit that
+/// the client did not request an illegal state before it is applied on commit.
+pub type SurfacePreCommit<State> = fn(state: &mut State, surface: &WlSurface);
+
+/// A system that is run after commiting the current surface state.
+///
+/// This is typically used by abstractions that further process the state.
+pub type SurfacePostCommit<State> = fn(state: &mut State, surface: &WlSurface);
+
+/// A system that is run when a surface is destroyed.
+///
+/// This may be useful for cleaning up state introduced by extension protocol objects.
+pub type SurfaceDestroy<State> = fn(state: &mut State, surface: &WlSurface);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Damage {
+    Surface(Rectangle<i32, Logical>),
+    Buffer(Rectangle<i32, smithay::utils::Buffer>),
 }
 
 /// The role of a [`WlSurface`].
@@ -155,4 +186,48 @@ pub struct Subsurface {
 
 impl Subsurface {
     pub const ROLE: &str = "subsurface";
+}
+
+pub struct RegionData {
+    inner: Mutex<RegionAttributes>,
+}
+
+/// Kind of a rectangle part of a region
+#[derive(Copy, Clone, Debug)]
+pub enum RectangleKind {
+    /// This rectangle should be added to the region
+    Add,
+    /// The intersection of this rectangle with the region should
+    /// be removed from the region
+    Subtract,
+}
+
+/// Description of the contents of a region
+///
+/// A region is defined as an union and difference of rectangle.
+///
+/// This struct contains an ordered `Vec` containing the rectangles defining
+/// a region. They should be added or subtracted in this order to compute the
+/// actual contents of the region.
+#[derive(Clone, Debug, Default)]
+pub struct RegionAttributes {
+    /// List of rectangle part of this region
+    pub rects: Vec<(RectangleKind, Rectangle<i32, Logical>)>,
+}
+
+impl RegionAttributes {
+    /// Checks whether given point is inside the region.
+    pub fn contains<P: Into<Point<i32, Logical>>>(&self, point: P) -> bool {
+        let point: Point<i32, Logical> = point.into();
+        let mut contains = false;
+        for (kind, rect) in &self.rects {
+            if rect.contains(point) {
+                match kind {
+                    RectangleKind::Add => contains = true,
+                    RectangleKind::Subtract => contains = false,
+                }
+            }
+        }
+        contains
+    }
 }

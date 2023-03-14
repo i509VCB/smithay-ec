@@ -6,7 +6,7 @@
 //!
 //! TODO: Describe the specifics of the compromise between EC and ECS that was chosen here.
 //!
-//! 
+//!
 
 pub mod compositor;
 
@@ -21,13 +21,6 @@ pub struct Ecs {
 }
 
 impl Ecs {
-    pub fn query_one_mut<T, Q: Query>(
-        &mut self,
-        entity: &TypedEntity<T>,
-    ) -> Result<QueryItem<'_, Q>, QueryOneError> {
-        self.world.query_one_mut::<Q>(entity.entity())
-    }
-
     pub fn world(&mut self) -> &mut hecs::World {
         &mut self.world
     }
@@ -39,7 +32,7 @@ impl Debug for Ecs {
     }
 }
 
-pub trait EcsHandler {
+pub trait EcsAccess {
     fn ecs(&mut self) -> &mut Ecs;
 }
 
