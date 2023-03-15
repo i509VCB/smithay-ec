@@ -1,74 +1,30 @@
 use std::sync::Mutex;
 
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::Rectangle;
 use wayland_backend::server::{ClientId, ObjectId};
 use wayland_server::{
     protocol::{
         wl_callback::WlCallback,
         wl_compositor::{self, WlCompositor},
-        wl_output,
         wl_region::{self, WlRegion},
         wl_surface::{self, WlSurface},
     },
     Client, DataInit, Dispatch, DisplayHandle, Resource, WEnum,
 };
 
-use crate::{EcsAccess, EntityData};
+use crate::EntityData;
 
 use super::{
-    Buffer, BufferAssignment, Compositor, CompositorHandler, Damage, RectangleKind,
-    RegionAttributes, RegionData, Role, SurfaceDestroy, SurfacePostCommit, SurfacePreCommit,
+    Buffer, BufferAssignment, Compositor, CompositorHandler, Damage, Internal, RectangleKind,
+    RegionAttributes, RegionData, Role,
 };
-
-/// Internal component for data assoicated with a [`WlSurface`].
-///
-/// This is not public API.
-struct Internal<State: EcsAccess> {
-    pre_commit_systems: Vec<SurfacePreCommit<State>>,
-    post_commit_systems: Vec<SurfacePostCommit<State>>,
-    destroy_systems: Vec<SurfaceDestroy<State>>,
-
-    pending: Pending,
-}
-
-impl<State: EcsAccess> Default for Internal<State> {
-    fn default() -> Self {
-        Self {
-            pre_commit_systems: Vec::new(),
-            post_commit_systems: Vec::new(),
-            destroy_systems: Vec::new(),
-            pending: Pending {
-                damage: Vec::new(),
-                frame_callbacks: Vec::new(),
-                transform: wl_output::Transform::Normal,
-                scale: 1,
-                delta: None,
-                buffer: None,
-                opaque_region: None,
-                input_region: None,
-            },
-        }
-    }
-}
-
-struct Pending {
-    damage: Vec<Damage>,
-    frame_callbacks: Vec<WlCallback>,
-    transform: wl_output::Transform,
-    scale: i32,
-    delta: Option<Point<i32, Logical>>,
-    buffer: Option<BufferAssignment>,
-    opaque_region: Option<RegionAttributes>,
-    input_region: Option<RegionAttributes>,
-}
 
 impl<State> Dispatch<WlCompositor, (), State> for Compositor
 where
     State: Dispatch<WlCompositor, ()>
         + Dispatch<WlRegion, RegionData>
         + Dispatch<WlSurface, EntityData>
-        + CompositorHandler
-        + 'static,
+        + CompositorHandler,
 {
     fn request(
         state: &mut State,
@@ -97,11 +53,15 @@ where
                     )
                     .expect("Entity was reserved");
 
+                state
+                    .compositor()
+                    .surfaces
+                    .insert(surface.id(), surface.clone());
                 state.new_surface(surface);
             }
 
             wl_compositor::Request::CreateRegion { id } => {
-                let region = data_init.init(
+                data_init.init(
                     id,
                     RegionData {
                         inner: Mutex::new(RegionAttributes::default()),

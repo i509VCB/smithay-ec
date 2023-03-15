@@ -30,17 +30,65 @@ use std::{collections::HashMap, sync::Mutex};
 use hecs::Entity;
 use smithay::utils::{Logical, Point, Rectangle};
 use wayland_backend::server::ObjectId;
-use wayland_server::protocol::{
-    wl_buffer, wl_output, wl_subsurface::WlSubsurface, wl_surface::WlSurface,
+use wayland_server::{
+    protocol::{
+        wl_buffer, wl_callback::WlCallback, wl_output, wl_subsurface::WlSubsurface,
+        wl_surface::WlSurface,
+    },
+    Resource,
 };
 
-use crate::EcsAccess;
+use crate::{Ecs, EcsAccess, EntityData};
 
 // TODO: Way to allow components to be notified that a surface was pre and post committed. This kind of acts
 // like a system. But it's per object type.
 
 pub struct Compositor {
     surfaces: HashMap<ObjectId, WlSurface>,
+}
+
+impl Compositor {
+    pub fn add_pre_commit<State>(
+        ecs: &mut Ecs,
+        surface: &WlSurface,
+        handler: SurfacePreCommit<State>,
+    ) where
+        State: EcsAccess,
+    {
+        let data = surface.data::<EntityData>().unwrap();
+        let internal = ecs
+            .world
+            .query_one_mut::<&mut Internal<State>>(data.0)
+            .expect("State type did not match");
+        internal.pre_commit_systems.push(handler);
+    }
+
+    pub fn add_post_commit<State>(
+        ecs: &mut Ecs,
+        surface: &WlSurface,
+        handler: SurfacePostCommit<State>,
+    ) where
+        State: EcsAccess,
+    {
+        let data = surface.data::<EntityData>().unwrap();
+        let internal = ecs
+            .world
+            .query_one_mut::<&mut Internal<State>>(data.0)
+            .expect("State type did not match");
+        internal.post_commit_systems.push(handler);
+    }
+
+    pub fn add_destroy<State>(ecs: &mut Ecs, surface: &WlSurface, handler: SurfaceDestroy<State>)
+    where
+        State: EcsAccess,
+    {
+        let data = surface.data::<EntityData>().unwrap();
+        let internal = ecs
+            .world
+            .query_one_mut::<&mut Internal<State>>(data.0)
+            .expect("State type did not match");
+        internal.destroy_systems.push(handler);
+    }
 }
 
 pub trait CompositorHandler: EcsAccess {
@@ -230,4 +278,46 @@ impl RegionAttributes {
         }
         contains
     }
+}
+
+/// Internal component for data assoicated with a [`WlSurface`].
+///
+/// This is not public API.
+struct Internal<State: EcsAccess> {
+    pre_commit_systems: Vec<SurfacePreCommit<State>>,
+    post_commit_systems: Vec<SurfacePostCommit<State>>,
+    destroy_systems: Vec<SurfaceDestroy<State>>,
+
+    pending: Pending,
+}
+
+impl<State: EcsAccess> Default for Internal<State> {
+    fn default() -> Self {
+        Self {
+            pre_commit_systems: Vec::new(),
+            post_commit_systems: Vec::new(),
+            destroy_systems: Vec::new(),
+            pending: Pending {
+                damage: Vec::new(),
+                frame_callbacks: Vec::new(),
+                transform: wl_output::Transform::Normal,
+                scale: 1,
+                delta: None,
+                buffer: None,
+                opaque_region: None,
+                input_region: None,
+            },
+        }
+    }
+}
+
+struct Pending {
+    damage: Vec<Damage>,
+    frame_callbacks: Vec<WlCallback>,
+    transform: wl_output::Transform,
+    scale: i32,
+    delta: Option<Point<i32, Logical>>,
+    buffer: Option<BufferAssignment>,
+    opaque_region: Option<RegionAttributes>,
+    input_region: Option<RegionAttributes>,
 }

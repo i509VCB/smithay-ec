@@ -32,7 +32,7 @@ impl Debug for Ecs {
     }
 }
 
-pub trait EcsAccess {
+pub trait EcsAccess: 'static {
     fn ecs(&mut self) -> &mut Ecs;
 }
 
