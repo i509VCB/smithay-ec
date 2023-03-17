@@ -9,20 +9,42 @@
 //!
 
 pub mod compositor;
+pub mod shm;
+pub mod xdg_shell;
 
 use std::fmt::Debug;
 
 pub use hecs;
 use hecs::{Entity, Query, QueryItem, QueryOneError};
+pub use wayland_protocols;
 pub use wayland_server;
+use wayland_server::Resource;
 
 pub struct Ecs {
     world: hecs::World,
 }
 
 impl Ecs {
+    pub fn new() -> Self {
+        Self {
+            world: hecs::World::new(),
+        }
+    }
+
+    /// Low level access to the world.
     pub fn world(&mut self) -> &mut hecs::World {
         &mut self.world
+    }
+
+    pub fn query_one_mut<Q: Query, I: Resource>(
+        &mut self,
+        resource: &I,
+    ) -> Result<QueryItem<'_, Q>, QueryOneError> {
+        let entity = resource
+            .data::<EntityData>()
+            .expect("Cannot query resource that does not use EntityData")
+            .0;
+        self.world().query_one_mut::<Q>(entity)
     }
 }
 

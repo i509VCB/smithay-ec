@@ -32,10 +32,10 @@ use smithay::utils::{Logical, Point, Rectangle};
 use wayland_backend::server::ObjectId;
 use wayland_server::{
     protocol::{
-        wl_buffer, wl_callback::WlCallback, wl_output, wl_subsurface::WlSubsurface,
-        wl_surface::WlSurface,
+        wl_buffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output,
+        wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface, wl_surface::WlSurface,
     },
-    Resource,
+    DisplayHandle, GlobalDispatch, Resource, Weak,
 };
 
 use crate::{Ecs, EcsAccess, EntityData};
@@ -48,6 +48,20 @@ pub struct Compositor {
 }
 
 impl Compositor {
+    pub fn new<State>(display: &mut DisplayHandle) -> Self
+    where
+        State: GlobalDispatch<WlCompositor, ()>
+            + GlobalDispatch<WlSubcompositor, ()>
+            + CompositorHandler,
+    {
+        let _global = display.create_global::<State, WlCompositor, _>(5, ());
+        let _global = display.create_global::<State, WlSubcompositor, _>(1, ());
+
+        Self {
+            surfaces: HashMap::new(),
+        }
+    }
+
     pub fn add_pre_commit<State>(
         ecs: &mut Ecs,
         surface: &WlSurface,
@@ -173,27 +187,28 @@ impl Role {
 /// This can always be queried if the surface is alive.
 #[derive(Debug)]
 pub struct Buffer {
-    assignment: Option<BufferAssignment>,
+    buffer: Option<BufferAssignment>,
     delta: Option<Point<i32, Logical>>,
     scale: i32,
     transform: wl_output::Transform,
+    damage: Vec<Damage>,
 }
 
 impl Default for Buffer {
     fn default() -> Self {
         Self {
-            assignment: None,
+            buffer: None,
             delta: None,
             scale: 1,
             transform: wl_output::Transform::Normal,
+            damage: Vec::new(),
         }
     }
 }
 
 impl Buffer {
-    // TODO: Buffer
     pub fn buffer(&self) -> Option<BufferAssignment> {
-        self.assignment.clone()
+        self.buffer.clone()
     }
 
     pub fn delta(&self) -> Option<Point<i32, Logical>> {
@@ -206,6 +221,10 @@ impl Buffer {
 
     pub fn transform(&self) -> wl_output::Transform {
         self.transform
+    }
+
+    pub fn damage(&mut self) -> &mut Vec<Damage> {
+        &mut self.damage
     }
 }
 
@@ -222,8 +241,8 @@ pub struct AlreadyHasRole;
 pub struct Subsurface {
     /// The entity of the surface which is the root of the subsurface.
     ///
-    /// The root is the surface which is the ultimate parent of the sub surface.
-    root: Entity,
+    /// The root is the surface which is the parent of all the subsurfaces in the surface tree.
+    parent: Weak<WlSurface>,
 
     /// Whether this subsurface is marked as a sync subsurface.
     ///
@@ -245,6 +264,7 @@ pub struct RegionData {
 pub enum RectangleKind {
     /// This rectangle should be added to the region
     Add,
+
     /// The intersection of this rectangle with the region should
     /// be removed from the region
     Subtract,

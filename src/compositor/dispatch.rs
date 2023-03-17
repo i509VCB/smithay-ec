@@ -7,17 +7,40 @@ use wayland_server::{
         wl_callback::WlCallback,
         wl_compositor::{self, WlCompositor},
         wl_region::{self, WlRegion},
+        wl_subcompositor::{self, WlSubcompositor},
+        wl_subsurface::{self, WlSubsurface},
         wl_surface::{self, WlSurface},
     },
-    Client, DataInit, Dispatch, DisplayHandle, Resource, WEnum,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, Resource, WEnum,
 };
 
-use crate::EntityData;
+use crate::{
+    compositor::{AlreadyHasRole, Subsurface},
+    EntityData,
+};
 
 use super::{
     Buffer, BufferAssignment, Compositor, CompositorHandler, Damage, Internal, RectangleKind,
     RegionAttributes, RegionData, Role,
 };
+
+impl<State> GlobalDispatch<WlCompositor, (), State> for Compositor
+where
+    State: GlobalDispatch<WlCompositor, ()>
+        + Dispatch<WlCompositor, ()>
+        + Dispatch<WlRegion, RegionData>,
+{
+    fn bind(
+        _state: &mut State,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<WlCompositor>,
+        _global_data: &(),
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
 
 impl<State> Dispatch<WlCompositor, (), State> for Compositor
 where
@@ -49,6 +72,7 @@ where
                             Internal::<State>::default(),
                             Role::default(),
                             Buffer::default(),
+                            // TODO: Input and opaque regions
                         ),
                     )
                     .expect("Entity was reserved");
@@ -193,14 +217,19 @@ where
                     system(state, surface)
                 }
 
-                let internal = state
+                let (internal, buffer) = state
                     .ecs()
                     .world()
-                    .query_one_mut::<&mut Internal<State>>(data.0)
+                    .query_one_mut::<(&mut Internal<State>, &mut Buffer)>(data.0)
                     .expect("Surface must be a valid entity if dispatched");
                 let post_commit_systems = internal.post_commit_systems.clone();
 
                 // TODO: Apply current state
+                buffer.delta = internal.pending.delta;
+                buffer.buffer = internal.pending.buffer.clone();
+                buffer.scale = internal.pending.scale;
+                buffer.transform = internal.pending.transform;
+                buffer.damage.extend(internal.pending.damage.drain(..));
 
                 for system in post_commit_systems {
                     system(state, surface)
@@ -321,5 +350,128 @@ where
 
             _ => unreachable!(),
         }
+    }
+}
+
+impl<State> GlobalDispatch<WlSubcompositor, (), State> for Compositor
+where
+    State: GlobalDispatch<WlSubcompositor, ()>
+        + Dispatch<WlSubcompositor, ()>
+        + Dispatch<WlSubsurface, EntityData>,
+{
+    fn bind(
+        _state: &mut State,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<WlSubcompositor>,
+        _global_data: &(),
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl<State> Dispatch<WlSubcompositor, (), State> for Compositor
+where
+    State: Dispatch<WlSubcompositor, ()> + Dispatch<WlSubsurface, EntityData> + CompositorHandler,
+{
+    fn request(
+        state: &mut State,
+        client: &Client,
+        subcompositor: &WlSubcompositor,
+        request: wl_subcompositor::Request,
+        data: &(),
+        display: &DisplayHandle,
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        match request {
+            wl_subcompositor::Request::Destroy => {
+                // wl_subsurface protocol objects are unaffected by the global being destroyed.
+            }
+
+            wl_subcompositor::Request::GetSubsurface {
+                id,
+                surface,
+                parent,
+            } => {
+                // Getting the subsurface assigns a subsurface role to the surface.
+                let entity = surface.data::<EntityData>().unwrap().0;
+
+                let role = state
+                    .ecs()
+                    .world()
+                    .query_one_mut::<&mut Role>(entity)
+                    .unwrap();
+
+                if let Err(AlreadyHasRole) = role.set_role(Subsurface::ROLE) {
+                    subcompositor.post_error(
+                        wl_subcompositor::Error::BadSurface,
+                        "Surface already has a role",
+                    );
+                    return;
+                }
+
+                data_init.init(id, EntityData(entity));
+                state
+                    .ecs()
+                    .world()
+                    .insert_one(
+                        entity,
+                        Subsurface {
+                            parent: parent.downgrade(),
+                            // Quoting wl_subsurface:
+                            // > A sub-surface is initially in the synchronized mode.
+                            sync: true,
+                        },
+                    )
+                    .unwrap();
+
+                // TODO: Setup relations to other subsurfaces.
+            }
+
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl<State> Dispatch<WlSubsurface, EntityData, State> for Compositor
+where
+    State: Dispatch<WlSubsurface, EntityData> + CompositorHandler,
+{
+    fn request(
+        state: &mut State,
+        client: &Client,
+        resource: &WlSubsurface,
+        request: wl_subsurface::Request,
+        data: &EntityData,
+        dhandle: &DisplayHandle,
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        match request {
+            wl_subsurface::Request::Destroy => todo!(),
+            wl_subsurface::Request::SetPosition { x, y } => todo!(),
+            wl_subsurface::Request::PlaceAbove { sibling } => todo!(),
+            wl_subsurface::Request::PlaceBelow { sibling } => todo!(),
+            wl_subsurface::Request::SetSync => todo!(),
+            wl_subsurface::Request::SetDesync => todo!(),
+            _ => todo!(),
+        }
+    }
+}
+
+impl<State> Dispatch<WlCallback, (), State> for Compositor
+where
+    State: Dispatch<WlCallback, ()>,
+{
+    fn request(
+        _state: &mut State,
+        _client: &Client,
+        _resource: &WlCallback,
+        _request: <WlCallback as Resource>::Request,
+        _data: &(),
+        _dhandle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, State>,
+    ) {
+        unreachable!("no requests")
     }
 }
